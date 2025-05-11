@@ -158,7 +158,7 @@ if st.sidebar.button("Lancer la simulation"):
         horizon=horizon,
         rdt_bourse_2=rdt_bourse_2, rdt_bourse_3=rdt_bourse_3,
         prix_loc=prix_loc, rend_brut=rend_brut,
-        vacance=vacance, charges_exploit=charges_expl, tax_fonc=taxe_fonciere,
+        vacance=vacance, charges_exploit=charges_expl, taxe_fonc=taxe_fonciere,
         appr_loc=appr_loc
     )
 
