@@ -1,89 +1,185 @@
+# streamlit_app.py
 import streamlit as st
 import numpy as np
 import numpy_financial as npf
 import matplotlib.pyplot as plt
 
-# Fonction pour calculer les résultats des stratégies
-def calculer_strategies(params):
-    prix_paris = params['prix_paris']
-    apport = params['apport']
-    taux_credit = params['taux_credit'] / 100
-    duree_credit = params['duree_credit']
-    rendement_bourse = params['rendement_bourse'] / 100
-    horizon = params['horizon']
+# --------------------- Fonctions utilitaires ---------------------
+def ann_to_month(rate):
+    """Convertit un taux annuel en taux mensuel composé équivalent."""
+    return (1 + rate) ** (1 / 12) - 1
 
-    # Stratégie 1 : Immobilier à Paris
-    montant_credit = prix_paris - apport
-    mensualite = -npf.pmt(taux_credit / 12, duree_credit * 12, montant_credit)
-    flux_immo = [-apport] + [-mensualite * 12] * duree_credit + [prix_paris * 1.02 ** horizon]  # Valorisation à +2%/an
-    irr_immo = npf.irr(flux_immo) * 100
-    patrimoine_immo = prix_paris * (1.02 ** horizon) - montant_credit * (1 + taux_credit) ** horizon
+def tri_annualise(flux_mensuels):
+    irr_m = npf.irr(flux_mensuels)
+    return (1 + irr_m) ** 12 - 1 if irr_m is not None else np.nan
 
-    # Stratégie 2 : Bourse
-    flux_bourse = [-prix_paris] + [0] * (horizon - 1) + [prix_paris * (1 + rendement_bourse) ** horizon]
-    irr_bourse = npf.irr(flux_bourse) * 100
-    patrimoine_bourse = prix_paris * (1 + rendement_bourse) ** horizon
+# --------------------- Calcul complet des 3 stratégies ---------------------
+def run_simulation(params):
+    # Dilate les paramètres
+    p           = params
+    n_months    = p['horizon'] * 12
+    t_mens      = p['taux_credit'] / 100 / 12
+    tm_bourse_2 = ann_to_month(p['rdt_bourse_2'] / 100)
+    tm_bourse_3 = ann_to_month(p['rdt_bourse_3'] / 100)
 
-    # Stratégie 3 : Sans investissement
-    flux_sans = [-prix_paris] + [0] * horizon
-    irr_sans = npf.irr(flux_sans) * 100
-    patrimoine_sans = prix_paris
+    # === STRATÉGIE 1 : Achat RP Paris ===
+    apport      = p['prix_paris'] * p['apport_pct'] / 100
+    frais_not   = p['prix_paris'] * p['frais_not_pct'] / 100
+    emprunt_P   = p['prix_paris'] + frais_not - apport
+    mens_P      = -npf.pmt(t_mens, n_months, emprunt_P)
+    effort_ref  = mens_P + p['charges_paris_0']
 
-    # Évolution du patrimoine pour le graphique
-    temps = np.arange(horizon + 1)
-    patrimoine_immo_t = [apport + prix_paris * (1.02 ** t) - montant_credit * (1 + taux_credit) ** t for t in temps]
-    patrimoine_bourse_t = [prix_paris * (1 + rendement_bourse) ** t for t in temps]
-    patrimoine_sans_t = [prix_paris] * (horizon + 1)
+    flux_A = [-(apport + frais_not)]
+    charges_P  = p['charges_paris_0']
+    loyer_imput = p['loyer_paris_0']
 
+    patr_A_t = [-(apport + frais_not)]
+    capital_restant_P = emprunt_P
+
+    for m in range(1, n_months + 1):
+        inflow  = loyer_imput
+        int_pmt = capital_restant_P * t_mens
+        amort   = mens_P - int_pmt
+        capital_restant_P -= amort
+        outflow = mens_P + charges_P
+        flux_A.append(inflow - outflow)
+
+        # Patrimoine instantané = valeur bien – dette
+        valeur_bien = p['prix_paris'] * (1 + p['appr_paris']/100) ** (m/12)
+        patr_A_t.append(valeur_bien - capital_restant_P)
+
+        if m % 12 == 0:
+            loyer_imput *= 1 + p['inflation']/100
+            charges_P   *= 1 + p['inflation']/100
+
+    # Valeur finale (revente)
+    valeur_finale_P = p['prix_paris'] * (1 + p['appr_paris']/100) ** p['horizon']
+    flux_A[-1] += valeur_finale_P
+    patr_final_A = patr_A_t[-1]
+
+    irr_A = tri_annualise(flux_A)
+
+    # === STRATÉGIE 2 : Location + Bourse ===
+    flux_B = [-apport]
+    port_B = apport
+    loyer_P = p['loyer_paris_0']
+    patr_B_t = [apport]
+
+    for m in range(1, n_months + 1):
+        diff = effort_ref - loyer_P   # écart mensuel à investir
+        port_B = (port_B + diff) * (1 + tm_bourse_2)
+        flux_B.append(-diff)
+        patr_B_t.append(port_B)
+        if m % 12 == 0:
+            loyer_P *= 1 + p['inflation']/100
+
+    flux_B[-1] += port_B
+    irr_B = tri_annualise(flux_B)
+    patr_final_B = port_B
+
+    # === STRATÉGIE 3 : Location + Locatif + Bourse ===
+    frais_not_L = p['prix_loc'] * p['frais_not_pct']/100
+    emprunt_L   = p['prix_loc'] + frais_not_L - apport
+    mens_L      = -npf.pmt(t_mens, n_months, emprunt_L)
+    loyer_brut  = p['prix_loc'] * p['rend_brut']/100 / 12
+
+    flux_C = [-apport]
+    port_C = 0
+    loyer_P = p['loyer_paris_0']
+    loyer_n = loyer_brut
+    dette_L = emprunt_L
+    patr_C_t = [-apport]
+
+    for m in range(1, n_months + 1):
+        # Loyers nets après vacance & charges
+        lo_net = loyer_n * (1 - p['vacance']) * (1 - p['charges_exploit']) - p['taxe_fonc']/12
+        int_L  = dette_L * t_mens
+        amortL = mens_L - int_L
+        dette_L -= amortL
+        cashflow = lo_net - mens_L
+        effort   = effort_ref - loyer_P
+        invest   = max(0, effort + cashflow)
+        port_C   = (port_C + invest) * (1 + tm_bourse_3)
+
+        # Patrimoine instantané
+        valeur_loc = p['prix_loc'] * (1 + p['appr_loc']/100) ** (m/12)
+        patr_C_t.append(valeur_loc + port_C - dette_L)
+        flux_C.append(-invest)
+
+        if m % 12 == 0:
+            loyer_P *= 1 + p['inflation']/100
+            loyer_n *= 1 + p['inflation']/100
+
+    valeur_finale_L = p['prix_loc'] * (1 + p['appr_loc']/100) ** p['horizon']
+    flux_C[-1] += valeur_finale_L + port_C
+    patr_final_C = valeur_finale_L + port_C - 0  # dette nulle
+
+    irr_C = tri_annualise(flux_C)
+
+    # Packaging résultats
+    temps = np.arange(p['horizon']*12 + 1) / 12  # en années
     return {
-        'irr_immo': irr_immo, 'patrimoine_immo': patrimoine_immo, 'patrimoine_immo_t': patrimoine_immo_t,
-        'irr_bourse': irr_bourse, 'patrimoine_bourse': patrimoine_bourse, 'patrimoine_bourse_t': patrimoine_bourse_t,
-        'irr_sans': irr_sans, 'patrimoine_sans': patrimoine_sans, 'patrimoine_sans_t': patrimoine_sans_t,
-        'temps': temps
+        "IRR_A": irr_A, "IRR_B": irr_B, "IRR_C": irr_C,
+        "patr_A": patr_final_A, "patr_B": patr_final_B, "patr_C": patr_final_C,
+        "courbes": {
+            "Achat Paris": patr_A_t,
+            "Bourse": patr_B_t,
+            "Locatif + Bourse": patr_C_t
+        },
+        "temps": temps
     }
 
-# Interface Streamlit
-st.title("Comparateur de Stratégies d’Investissement")
+# --------------------- Interface Streamlit ---------------------
+st.title("📊 Comparateur de Stratégies : Acheter, Louer + Bourse, Louer + Locatif")
 
-# Barre latérale pour les paramètres
-st.sidebar.header("Paramètres")
-prix_paris = st.sidebar.number_input("Prix de la résidence (€)", min_value=100000, value=680000, step=10000)
-apport = st.sidebar.number_input("Apport initial (€)", min_value=0, value=150000, step=5000)
-taux_credit = st.sidebar.slider("Taux de crédit annuel (%)", 0.5, 5.0, 2.0, 0.1)
-duree_credit = st.sidebar.slider("Durée du crédit (années)", 5, 30, 20, 1)
-rendement_bourse = st.sidebar.slider("Rendement annuel bourse (%)", 1.0, 10.0, 5.0, 0.5)
-horizon = st.sidebar.slider("Horizon d’investissement (années)", 5, 40, 20, 1)
+with st.sidebar:
+    st.header("Paramètres principaux")
+    prix_paris     = st.number_input("Prix du bien à Paris (€)", 200_000, 2_000_000, 680_000, 10_000)
+    loyer_paris_0  = st.number_input("Loyer marché équivalent (€ / mois)", 500, 4_000, 1_860, 50)
+    charges_paris  = st.number_input("Charges propres (€/mois)", 100, 2_000, 941, 10)
+    prix_loc       = st.number_input("Prix du locatif au Mans (€)", 50_000, 300_000, 100_000, 5_000)
+    rend_brut      = st.slider("Rendement locatif brut (%)", 4.0, 12.0, 10.0, 0.1)
+    rdt_bourse_2   = st.slider("Rendement annuel bourse strat. 2 (%)", 3.0, 10.0, 5.0, 0.1)
+    rdt_bourse_3   = st.slider("Rendement annuel bourse strat. 3 (%)", 3.0, 10.0, 5.0, 0.1)
+    horizon        = st.slider("Horizon (années)", 10, 40, 30, 1)
 
-# Bouton pour lancer les calculs
-if st.sidebar.button("Calculer"):
-    params = {
-        'prix_paris': prix_paris,
-        'apport': apport,
-        'taux_credit': taux_credit,
-        'duree_credit': duree_credit,
-        'rendement_bourse': rendement_bourse,
-        'horizon': horizon
-    }
-    resultats = calculer_strategies(params)
+    st.subheader("Hypothèses secondaires")
+    inflation      = st.number_input("Inflation loyers & charges (%)", 0.0, 3.0, 1.5, 0.1)
+    appr_paris     = st.number_input("Appréciation Paris (%)", 0.0, 3.0, 0.8, 0.1)
+    appr_loc       = st.number_input("Appréciation locatif (%)", 0.0, 3.0, 1.0, 0.1)
+    vacance        = st.slider("Vacance locative (mois/an)", 0, 6, 1, 1) / 12
+    charges_expl   = st.slider("Charges d'exploitation (%)", 10, 30, 17, 1) / 100
 
-    # Affichage des résultats
-    st.header("Résultats")
-    st.write(f"**Stratégie 1 - Immobilier :** TRI = {resultats['irr_immo']:.2f}% | Patrimoine net = {resultats['patrimoine_immo']:,.0f} €")
-    st.write(f"**Stratégie 2 - Bourse :** TRI = {resultats['irr_bourse']:.2f}% | Patrimoine net = {resultats['patrimoine_bourse']:,.0f} €")
-    st.write(f"**Stratégie 3 - Sans investissement :** TRI = {resultats['irr_sans']:.2f}% | Patrimoine net = {resultats['patrimoine_sans']:,.0f} €")
+if st.sidebar.button("Lancer la simulation"):
+    params = dict(
+        prix_paris=prix_paris, charges_paris_0=charges_paris,
+        appr_paris=appr_paris, loyer_paris_0=loyer_paris_0, inflation=inflation,
+        apport_pct=10, frais_not_pct=8, taux_credit=3/100,  # constants
+        horizon=horizon,
+        rdt_bourse_2=rdt_bourse_2, rdt_bourse_3=rdt_bourse_3,
+        prix_loc=prix_loc, rend_brut=rend_brut,
+        vacance=vacance, charges_exploit=charges_expl, tax_fonc=taxe_fonciere,
+        appr_loc=appr_loc
+    )
 
-    # Graphique : Évolution du patrimoine
-    st.header("Évolution du Patrimoine")
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(resultats['temps'], resultats['patrimoine_immo_t'], label="Immobilier", color="blue")
-    ax.plot(resultats['temps'], resultats['patrimoine_bourse_t'], label="Bourse", color="green")
-    ax.plot(resultats['temps'], resultats['patrimoine_sans_t'], label="Sans investissement", color="red")
+    res = run_simulation(params)
+
+    st.header("Résultats synthétiques")
+    st.metric("IRR Achat Paris", f"{res['IRR_A']*100:.2f} %")
+    st.metric("IRR Location + Bourse", f"{res['IRR_B']*100:.2f} %")
+    st.metric("IRR Locatif + Bourse", f"{res['IRR_C']*100:.2f} %")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Patrimoine Achat", f"{res['patr_A']:,.0f} €")
+    col2.metric("Patrimoine Bourse", f"{res['patr_B']:,.0f} €")
+    col3.metric("Patrimoine Locatif", f"{res['patr_C']:,.0f} €")
+
+    st.header("Évolution du patrimoine net")
+    fig, ax = plt.subplots()
+    for label, courbe in res["courbes"].items():
+        ax.plot(res["temps"], courbe, label=label)
     ax.set_xlabel("Années")
     ax.set_ylabel("Patrimoine (€)")
-    ax.legend()
     ax.grid(True)
+    ax.legend()
     st.pyplot(fig)
-
-# Bouton de réinitialisation
-if st.sidebar.button("Réinitialiser"):
-    st.experimental_rerun()  # Relance l’app pour réinitialiser les valeurs par défaut
