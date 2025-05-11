@@ -149,6 +149,8 @@ with st.sidebar:
     appr_loc       = st.number_input("Appréciation locatif (%)", 0.0, 3.0, 1.0, 0.1)
     vacance        = st.slider("Vacance locative (mois/an)", 0, 6, 1, 1) / 12
     charges_expl   = st.slider("Charges d'exploitation (%)", 10, 30, 17, 1) / 100
+    # --- dans la sidebar, après charges_expl ---
+    taxe_fonciere = st.number_input("Taxe foncière annuelle (€)", 0, 5_000, 1_000, 50)
 
 if st.sidebar.button("Lancer la simulation"):
     params = dict(
