@@ -159,9 +159,6 @@ with st.sidebar:
     st.subheader("Hypothèses secondaires")
     inflation = st.number_input("Inflation loyers & charges (%)", 0.0, 3.0, 1.5, 0.1)
     appr_paris = st.number_input("Appréciation Paris (%)", 0.0, 3.0, 0.8, 0.1)
-    appr_loc = st.number_input("Appréciation locatif (%)", 0.0, 3.0, 1.0,
-# (Suite de l'interface Streamlit)
-    appr_loc = st.number_input("Appréciation locatif (%)", 0.0, 3.0, 1.0, 0.1)
     vacance = st.slider("Vacance locative (mois/an)", 0, 6, 1, 1) / 12
     charges_expl = st.slider("Charges d'exploitation (%)", 10, 30, 17, 1) / 100
     taxe_fonciere = st.number_input("Taxe foncière annuelle (€)", 0, 5_000, 1_000, 50)
