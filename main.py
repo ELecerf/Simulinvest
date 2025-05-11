@@ -99,7 +99,7 @@ def run_simulation(params: dict):
         port_C = (port_C + invest) * (1 + tm_bourse_3)
         valeur_loc = p["prix_loc"] * (1 + p["appr_loc"] / 100) ** (m / 12)
         patr_C_t.append(valeur_loc + port_C - dette_L)
-        flux_C.append(-invest)
+        flux_C.append(-(effort + cashflow))
         if m % 12 == 0:
             loyer_P *= 1 + p["inflation"] / 100
             loyer_n *= 1 + p["inflation"] / 100
